@@ -14,10 +14,6 @@ import java.util.List;
  */
 public class SystemUtil {
 
-    public static void main(String[] args) {
-        System.out.println(getHostIp());
-    }
-
     /**
      * 数据库用户名
      */
@@ -32,28 +28,32 @@ public class SystemUtil {
         return "Admin@123";
     }
 
-    private static final String jdbcUrl = getJdbcUrl0();
+    private static final String JDBC_URL = getJdbcUrl0();
 
     public static String getJdbcUrl() {
-        return jdbcUrl;
+        return JDBC_URL;
     }
 
     private static String getJdbcUrl0() {
-        return "jdbc:mysql://" + getHostIp() + ":3306/csp?useEncoding=true&characterEncoding=utf-8&serverTimezone=UTC";
+        return "jdbc:mysql://" + getHostIp0() + ":3306/csp?useEncoding=true&characterEncoding=utf-8&useSSL=false&serverTimezone=UTC";
     }
 
     /**
      * 获取本地服务器IP地址
      */
     public static String getHostIp() {
-        return hostIp;
+        return HOST_IP;
     }
 
-    private static final String hostIp = getHostIp0();
+    private static final String HOST_IP = getHostIp0();
 
     private static String getHostIp0() {
+        String hostIp = System.getProperty("mysql.servers");
+        if (!StringUtil.isEmpty(hostIp)) {
+            return hostIp;
+        }
         if (System.getProperty("os.name").toLowerCase().contains("windows")) {
-            return "192.168.3.168";
+            return "192.168.3.101";
         }
 
         String result = null;
@@ -98,5 +98,4 @@ public class SystemUtil {
         }
         return result;
     }
-
 }

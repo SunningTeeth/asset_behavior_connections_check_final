@@ -1,5 +1,6 @@
 package com.lanysec.services;
 
+import com.lanysec.config.ModelParamsConfigurer;
 import com.lanysec.utils.ConversionUtil;
 import com.lanysec.utils.DbConnectUtil;
 import com.lanysec.utils.StringUtil;
@@ -13,6 +14,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.time.LocalDateTime;
 import java.util.*;
 
 /**
@@ -23,19 +25,17 @@ public class CheckModelMapSourceFunction extends RichMapFunction<String, String>
 
     private static final Logger logger = LoggerFactory.getLogger(CheckModelMapSourceFunction.class);
 
-    private Connection connection;
-
     /**
      * 存储当前模型建模结果
      * key : modelingParamsId
      * value : k: srcId ===> v : 一条记录
      */
-    private List<Map<String, Object>> modelResults = new ArrayList<>();
+    private final List<Map<String, Object>> modelResults = new ArrayList<>();
 
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
-        connection = DbConnectUtil.getConnection();
+        Connection connection = DbConnectUtil.getConnection();
         String sql = "SELECT " +
                 "c.modeling_params_id,r.dst_ip_segment,r.src_ip,r.src_id,c.model_check_alt_params " +
                 "FROM model_result_asset_behavior_relation r,model_check_params c " +
@@ -43,8 +43,8 @@ public class CheckModelMapSourceFunction extends RichMapFunction<String, String>
                 "r.modeling_params_id = c.modeling_params_id " +
                 "AND c.model_type = 1 " +
                 "AND c.model_child_type = 3 " +
-                "AND c.model_check_switch = 1 " +
-                "AND c.modify_time < DATE_SUB( NOW(), INTERVAL 10 MINUTE );";
+                "AND c.model_check_switch = 1 ";
+        // "AND c.modify_time > DATE_SUB( NOW(), INTERVAL 10 MINUTE );";
 
         ResultSet resultSet = connection.prepareStatement(sql).executeQuery();
         while (resultSet.next()) {
@@ -70,8 +70,9 @@ public class CheckModelMapSourceFunction extends RichMapFunction<String, String>
         JSONObject json = (JSONObject) JSONValue.parse(line);
         String srcId = ConversionUtil.toString(json.get("SrcID"));
         String srcIp = ConversionUtil.toString(json.get("SrcIP"));
-        String dstId = ConversionUtil.toString(json.get("DstID"));
         String dstIp = ConversionUtil.toString(json.get("DstIP"));
+
+        String key = ConversionUtil.toString(calculateSegmentCurrKey());
         for (Map<String, Object> map : modelResults) {
 
             //TODO 排除白名单 放行
@@ -90,32 +91,89 @@ public class CheckModelMapSourceFunction extends RichMapFunction<String, String>
                 }
             }
 
+            if (StringUtil.isEmpty(srcId)) {
+                return line;
+            }
+
             String entityId = ConversionUtil.toString(map.get("srcId"));
-            String dstIpSegmentStr = ConversionUtil.toString(map.get("dstIpSegment"));
-            if (StringUtil.isEmpty(dstIpSegmentStr)) {
-                return line;
-            }
-            JSONArray dstIpSegmentArr = (JSONArray) JSONValue.parse(dstIpSegmentStr);
-            if (dstIpSegmentArr == null || dstIpSegmentArr.isEmpty()) {
-                return line;
-            }
-            //TODO 检测对应资产连接的目的IP是否在建模的网段
-            Set set = new HashSet(dstIpSegmentArr);
-            if (StringUtil.equalsIgnoreCase(entityId, srcId)) {
-                //TODO 分时统计的,如何检测？？？
-                if (set.contains(dstIp)) {
+            if (StringUtil.equals(entityId, srcId)) {
+
+                String dstIpSegmentStr = ConversionUtil.toString(map.get("dstIpSegment"));
+                if (StringUtil.isEmpty(dstIpSegmentStr)) {
                     return line;
                 }
-            }
-            if (StringUtil.equalsIgnoreCase(entityId, dstId)) {
-                //TODO 分时统计的,如何检测？？？
-                if (set.contains(srcIp)) {
+                JSONArray dstIpSegmentArr = (JSONArray) JSONValue.parse(dstIpSegmentStr);
+                if (dstIpSegmentArr == null || dstIpSegmentArr.isEmpty()) {
+                    return line;
+                }
+
+                String dstIpSegment = null;
+                for (Object o : dstIpSegmentArr) {
+                    JSONObject item = (JSONObject) JSONValue.parse(ConversionUtil.toString(o));
+                    String name = ConversionUtil.toString(item.get("name"));
+                    if (StringUtil.equals(name, key)) {
+                        dstIpSegment = ConversionUtil.toString(item.get("value"));
+                    }
+                }
+
+                if (StringUtil.isEmpty(dstIpSegment)) {
+                    return line;
+                }
+
+                // 不在建模目标ip中,发送到kafka topic
+                Set finalDstIpSegment = new HashSet((JSONArray) JSONValue.parse(dstIpSegment));
+                if (!finalDstIpSegment.contains(dstIp)) {
                     return line;
                 }
             }
         }
-        //TODO 为了测试
-        return line;
-        //return null;
+        return null;
+    }
+
+    /**
+     * 建模结果周期：1 代表一天。
+     * 2 代表一周。3 代表一季度。
+     * 4 代表一年。如果总长度填写 1 ，建模的时间单位可以是 ss mm hh 。周的建模时间单位只能是 dd 。其他的只能为月
+     * 计算模型的key
+     * <pre>
+     *   1. 建模周期为天 ：
+     *       SegmentKey : 每次从当前日期开始计算,以小时为key
+     *   2. 建模周期为周：建模时间单位只能是天）
+     *       SegmentKey : 每次从当前日期开始计算,以当前周几为key
+     *   3. 建模周期为季度：（建模时间单位只能是月）
+     *      SegmentKey : 每次从当前日期开始计算,以当前月份开始递增
+     *   4. 建模周期为年：（建模时间单位只能是月）
+     *      SegmentKey : 每次从当前日期开始计算,以当前月份开始递增
+     *
+     * </pre>
+     */
+    private Object calculateSegmentCurrKey() throws Exception {
+        // 建模周期
+        int cycle = ConversionUtil.toInteger(ModelParamsConfigurer.getModelingParams().get(AssetBehaviorConstants.MODEL_RESULT_SPAN));
+        LocalDateTime now = LocalDateTime.now();
+        Object segmentKey = null;
+        switch (cycle) {
+            // 暂时默认为小时
+            case 1: {
+                segmentKey = now.getHour();
+                break;
+            }
+            //周,频率只能是 dd
+            case 2: {
+                segmentKey = now.getDayOfWeek().getValue();
+                break;
+            }
+            //季度,频率只能是月
+            case 3:
+            case 4: {
+                // 年,频率只能是月
+                segmentKey = now.getMonth().getValue();
+                break;
+            }
+            default: {
+                throw new Exception("modeling span is not support.");
+            }
+        }
+        return segmentKey;
     }
 }
