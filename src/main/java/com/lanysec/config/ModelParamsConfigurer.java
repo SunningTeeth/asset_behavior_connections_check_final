@@ -71,6 +71,51 @@ public class ModelParamsConfigurer implements AssetBehaviorConstants {
             logger.error("Get modeling parameters from the database error ", throwable);
         }
         logger.info("Get modeling parameters from the database : " + result.toString());
+        modelingParams = result;
         return result;
     }
+
+    public static volatile List<Map<String, Object>> modelResult;
+
+    public static List<Map<String, Object>> getModelResult() throws Exception {
+        if (modelResult == null) {
+            modelResult = reloadBuildModelResult();
+        }
+        return modelResult;
+    }
+
+    public static List<Map<String, Object>> reloadBuildModelResult() throws SQLException {
+        String sql = "SELECT " +
+                "c.modeling_params_id,r.dst_ip_segment,r.src_ip,r.src_id,c.model_check_alt_params " +
+                "FROM model_result_asset_behavior_relation r,model_check_params c " +
+                "WHERE " +
+                "r.modeling_params_id = c.modeling_params_id " +
+                "AND c.model_type = 1 " +
+                "AND c.model_child_type = 3 " +
+                "AND c.model_check_switch = 1 ";
+        // "AND c.modify_time > DATE_SUB( NOW(), INTERVAL 10 MINUTE );";
+        List<Map<String, Object>> result = new ArrayList<>();
+        Connection connection = DbConnectUtil.getConnection();
+        if (connection == null) {
+            return result;
+        }
+        ResultSet resultSet = connection.prepareStatement(sql).executeQuery();
+        while (resultSet.next()) {
+            Map<String, Object> map = new HashMap<>(5);
+            String modelingParamsId = ConversionUtil.toString(resultSet.getString("modeling_params_id"));
+            String dstIpSegment = ConversionUtil.toString(resultSet.getString("dst_ip_segment"));
+            String srcIp = ConversionUtil.toString(resultSet.getString("src_ip"));
+            String srcId = ConversionUtil.toString(resultSet.getString("src_id"));
+            String modelCheckAltParams = ConversionUtil.toString(resultSet.getString("model_check_alt_params"));
+            map.put("modelingParamsId", modelingParamsId);
+            map.put("dstIpSegment", dstIpSegment);
+            map.put("srcIp", srcIp);
+            map.put("srcId", srcId);
+            map.put("modelCheckAltParams", modelCheckAltParams);
+            result.add(map);
+        }
+        modelResult = result;
+        return result;
+    }
+
 }

@@ -83,7 +83,6 @@ public class AssetBehaviorRelationCheck implements AssetBehaviorConstants {
         SingleOutputStreamOperator<String> checkStreamMap = kafkaSourceFilter.map(new CheckModelMapSourceFunction());
         SingleOutputStreamOperator<String> matchCheckStreamFilter = checkStreamMap.filter((FilterFunction<String>) value -> !StringUtil.isEmpty(value));
 
-        matchCheckStreamFilter.print().setParallelism(1);
         // 将过滤数据送往kafka  topic
         String brokers = ConversionUtil.toString(props.get(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
         String checkTopic = ConversionUtil.toString(props.getProperty("check.topic"));
@@ -108,6 +107,7 @@ public class AssetBehaviorRelationCheck implements AssetBehaviorConstants {
             public void run() {
                 try {
                     ModelParamsConfigurer.reloadModelingParams();
+                    ModelParamsConfigurer.reloadBuildModelResult();
                     logger.info("reload model params configurer.");
                 } catch (Throwable throwable) {
                     logger.error("timer schedule at fixed rate failed ", throwable);
